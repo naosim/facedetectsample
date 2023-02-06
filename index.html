@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<style type="text/css">
+  body{margin:0; padding:0;}
+
+  div, canvas {
+    position: absolute;
+    width: 360px;
+    height: 240px;
+  }
+  </style>
+	<script src="./js/face-api.js"></script>
+	
+</head>
+<body>
+  <button id="play">play</button><button id="stop">stop</button><br>
+  <div id="videoPreview"></div>
+	<canvas id="myCanvas"></canvas>
+  
+  
+  <script>
+const MODEL_URL = "./weights";
+
+let canvas, context, video, faceDrawer, lastTimestamp;
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+
+window.onload = (event)=>{
+	console.log("onload!");
+	loadModels();
+}
+
+async function loadModels(){
+	console.log("loadModels");
+	Promise.all([
+		faceapi.loadSsdMobilenetv1Model(MODEL_URL),
+		faceapi.loadFaceLandmarkModel(MODEL_URL),
+		faceapi.loadFaceRecognitionModel(MODEL_URL),
+    faceapi.loadFaceLandmarkTinyModel(MODEL_URL),
+    faceapi.loadTinyFaceDetectorModel(MODEL_URL),
+	]).then(loop);
+}
+
+async function loop() {
+  // videoタグのセットアップが終わるまでまつ
+  if(!document.querySelector('video')) {
+    await sleep(500);
+  }
+  video = document.querySelector('video');
+  await sleep(1000);
+
+  
+  // canvasのセットアップ
+  canvas = document.getElementById("myCanvas");
+	canvas.width = video.width;
+	canvas.height = video.height;
+	context = canvas.getContext("2d");
+
+  faceDrawer = new FaceDrawer(context);
+  // faceDrawer = new RawFaceDrawer(context);
+
+  lastTimestamp = Date.now();
+  await detectSingleFace();
+}
+
+async function detectSingleFace(){
+  // 顔認識
+  const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks(true)
+  // const detection = await faceapi.detectSingleFace(video, new faceapi.SsdMobilenetv1Options()).withFaceLandmarks(true)
+  // const detection = await faceapi.detectSingleFace(video, new faceapi.MtcnnOptions()).withFaceLandmarks(true)
+
+  // console.log(detection);
+  if(detection && detection.detection) {// 正常
+    drawResult(detection);
+    setTimeout(async () => {await detectSingleFace()}, 10);
+  } else if(video.paused) {// ビデオが止まっている
+    return; //end;
+  } else { // 顔が見つからない
+    console.log('not found', detection);
+    setTimeout(async () => {await detectSingleFace()}, 10);
+  }  
+}
+
+function drawResult(data){
+	const det = data.detection;
+	const mrks = data.landmarks.positions;
+	const box = det.box;
+
+  // 背景を透明にする
+  context.clearRect(0, 0, canvas.width, canvas.height);
+
+  // context.fillStyle = "white";
+  // context.fillRect(0, 0, canvas.width, canvas.height);
+
+  faceDrawer.draw(mrks);
+
+  context.font = '12px serif';
+  context.fillText(`${Date.now() - lastTimestamp}`, 10, 20);
+  lastTimestamp = Date.now()
+}
+
+class RawFaceDrawer {
+  constructor(context) {
+    this.context = context;
+  }
+  draw(mrks) {
+    drawLandmarks(mrks);
+  }
+}
+
+class FaceDrawer {
+  constructor(context) {
+    this.context = context;
+  }
+  draw(mrks) {
+    // 全体的に顔を大きくする
+    var c = {x: mrks[30].x, y: mrks[30].y};
+    mrks = mrks.map(v => ({
+      x: (v.x - c.x) * 1.3 + c.x,
+      y: (v.y - c.y) * 1.1 + c.y,
+    }))
+
+
+    this.context.strokeStyle = "black";
+    this.context.lineWidth = 2;
+
+
+    drawFace(mrks);
+
+    drawEyebrows(mrks);
+    drawEye2(mrks);
+    
+    // drawLandmarks(mrks);
+    drawNose(mrks);
+
+    drawMouth(mrks);
+    
+    // drawGrasses(mrks);
+  }
+}
+
+function drawMouth(mrks) {
+  var distNose = distance(mrks[27], mrks[30]);
+  var height = distance(mrks[62], mrks[57]);
+  // 鼻の長さに対する口の割合
+  var h = height / distNose;
+
+  var distFaceWidth = distance(mrks[2], mrks[14]);
+  var width = distance(mrks[48], mrks[54]);
+  var w = width / distFaceWidth;
+  
+  var isSmile = w > 0.41;
+  if(isSmile) {
+    console.log('w');
+  }
+  let a = {
+    x: (mrks[0].x - mrks[49].x) * 0.1 + mrks[49].x,
+    y: (mrks[0].y - mrks[49].y) * 0.1 + mrks[49].y,
+  }
+  let b = {
+    x: (mrks[16].x - mrks[53].x) * 0.1 + mrks[53].x,
+    y: (mrks[16].y - mrks[53].y) * 0.1 + mrks[53].y,
+  }
+  
+  if(h < 0.4) {
+    drawLine([49, 53].map(v => mrks[v]));
+    if(isSmile) {
+      drawLine([a, ...[49, 53].map(v => mrks[v]), b]);
+    } else {
+      drawLine([49, 53].map(v => mrks[v]));
+    }
+    
+  } else {
+    context.fillStyle = "black";
+    if(isSmile) {
+      // 口を開けた笑顔
+      let base = [58, 57, 56].map(v => mrks[v]);
+      drawClosedPath([a, ...base, b])
+    } else {
+      drawClosedPath([49, 58, 57, 56, 53].map(v => mrks[v]))
+    }
+  }
+}
+
+function drawEyebrows(mrks) {
+  drawLine([17, 18, 19, 20, 21].map(v => mrks[v]));
+  drawLine([22, 23, 24, 25, 26].map(v => mrks[v]));
+
+	// context.beginPath();
+  // context.moveTo(mrks[17].x, mrks[17].y);
+	// context.lineTo(mrks[21].x, mrks[21].y);
+  // context.stroke();
+
+  // context.beginPath();
+  // context.moveTo(mrks[22].x, mrks[22].y);
+	// context.lineTo(mrks[26].x, mrks[26].y);
+  // context.stroke();
+}
+
+function distance(p1, p2) {
+  return Math.sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y))
+}
+
+function drawEye2(mrks) {
+  context.lineWidth = 4;
+  drawLine([/*38,*/ 40, 41].map(v => mrks[v]));
+  drawLine([/*43,*/ 47, 46].map(v => mrks[v]));
+  context.lineWidth = 2;
+  drawLine([36, 37, 38, 39].map(v => mrks[v]));
+  drawLine([45, 44, 43, 42].map(v => mrks[v]));
+
+}
+
+function drawEye(mrks) {
+  context.fillStyle = "black";
+
+  const ratex = 2, ratey = 1.5;
+  const eyeRateX = 0.3, eyeRateY = 2;
+
+  // ctx.ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle [, counterclockwise]);
+  const radiusX = distance(mrks[36], mrks[39]) * eyeRateX;
+  const radiusY = distance(mrks[37], mrks[41]) * eyeRateY;
+
+  context.beginPath();
+  context.ellipse(
+    mrks[41].x, 
+    mrks[41].y,
+    distance(mrks[36], mrks[39]) * eyeRateX * ratex,
+    distance(mrks[37], mrks[41]) * eyeRateY * ratey,
+    Math.atan2(mrks[36].y - mrks[39].y, mrks[36].x - mrks[39].x),
+    0,2 * Math.PI
+  );
+  context.fillStyle = 'white';
+  context.fill();
+  context.stroke();
+
+  // 右目
+  context.fillStyle = 'black';
+  context.beginPath();
+  context.ellipse(
+    mrks[41].x, 
+    mrks[41].y,
+    distance(mrks[36], mrks[39]) * eyeRateX,
+    distance(mrks[37], mrks[41]) * eyeRateY,
+    Math.atan2(mrks[36].y - mrks[39].y, mrks[36].x - mrks[39].x),
+    0,2 * Math.PI
+  );
+  context.fill();
+
+  context.beginPath();
+  context.ellipse(
+    mrks[46].x, 
+    mrks[46].y,
+    distance(mrks[45], mrks[42]) * eyeRateX * ratex,
+    radiusY * ratey, //distance(mrks[44], mrks[46]) * 2,
+    Math.atan2(mrks[45].y - mrks[42].y, mrks[45].x - mrks[42].x),
+    0,2 * Math.PI
+  );
+  context.fillStyle = 'white';
+  context.fill();
+  context.stroke();
+
+  // 左目
+  context.fillStyle = 'black';
+  context.beginPath();
+  context.ellipse(
+    mrks[46].x, 
+    mrks[46].y,
+    distance(mrks[45], mrks[42]) * eyeRateX,
+    radiusY, //distance(mrks[44], mrks[46]) * 2,
+    Math.atan2(mrks[45].y - mrks[42].y, mrks[45].x - mrks[42].x),
+    0,2 * Math.PI
+  );
+  context.fill();
+}
+
+
+
+
+function drawLine(xyList) {
+  context.beginPath();
+  for(let i = 0; i < xyList.length; i++) {
+    if(i == 0) {
+      context.moveTo(xyList[i].x, xyList[i].y);
+    } else {
+      context.lineTo(xyList[i].x, xyList[i].y);
+    }
+  }
+
+  // for(let i = 0; i < xyList.length - 1; i++) {
+  //   context.moveTo(xyList[i].x, xyList[i].y);
+	// 	context.lineTo(xyList[i + 1].x, xyList[i + 1].y);
+  // }
+  context.stroke();
+}
+
+function drawClosedPath(xyList) {
+  context.beginPath();
+  for(let i = 0; i < xyList.length; i++) {
+    if(i == 0) {
+      context.moveTo(xyList[i].x, xyList[i].y);
+    } else {
+      context.lineTo(xyList[i].x, xyList[i].y);
+    }
+  }
+  context.closePath();
+  context.stroke();
+  context.fill();
+}
+
+function drawFace(mrks) {
+  context.fillStyle = "white";
+  var path = [0, 4, 7, 9, 12, 16];
+  const top = {// 顎から鼻の付け根を結ぶ線分の1.5倍の点
+    x: (mrks[27].x - mrks[30].x) * 4 + mrks[30].x,
+    y: (mrks[27].y - mrks[30].y) * 4 + mrks[30].y
+  }
+  var xyList = path.map(v => mrks[v]);
+  context.beginPath();
+  for(let i = 0; i < xyList.length; i++) {
+    if(i == 0) {
+      context.moveTo(xyList[i].x, xyList[i].y);
+    } else {
+      context.lineTo(xyList[i].x, xyList[i].y);
+    }
+  }
+  var r = distance(mrks[0], mrks[16]) / 2;
+  context.ellipse(
+    (mrks[0].x + mrks[16].x) / 2, 
+    (mrks[0].y + mrks[16].y) / 2,
+    r, //distance(mrks[45], mrks[42]) * 0.3,
+    r, //distance(mrks[44], mrks[46]) * 2,
+    Math.atan2(mrks[0].y - mrks[16].y, mrks[0].x - mrks[16].x),
+    0,Math.PI
+  );
+
+
+  // context.quadraticCurveTo(top.x, top.y, xyList[0].x, xyList[0].y)
+  context.closePath();
+  context.stroke();
+  context.fill();
+  
+  
+  
+  // drawLine([mrks[0], top, mrks[16]]);
+}
+
+function drawLandmarks(mrks){
+  context.fillStyle = "red";
+	for(let i=0; i<mrks.length; i++){
+		let x = mrks[i].x;
+		let y = mrks[i].y;
+		context.fillRect(x, y, 2, 2);
+		context.fillText(i, x, y, 18);
+	}
+}
+
+function drawNose(mrks){
+  // var path = [27, /*28, 29,*/ 30, /*31,*/ 32, 33, 34, /*35*/ 30]
+  // drawLine(path.map(v => mrks[v]));
+
+  var path = [30, 32, 33, 34, 30];
+  var diff = {x: mrks[29].x - mrks[30].x, y: mrks[29].y - mrks[30].y}
+  drawLine(path.map(v => mrks[v]).map(v => ({x: v.x + diff.x, y: v.y + diff.y})));
+	
+}
+
+function drawGrasses(mrks){
+	context.strokeStyle = "black";
+	context.lineWidth = 2;
+	context.beginPath();
+	context.moveTo(mrks[39].x, mrks[39].y);
+	context.lineTo(mrks[42].x, mrks[42].y);
+	context.stroke();
+	// 左
+	const lX = (mrks[39].x + mrks[36].x)/2;
+	const lY = (mrks[41].y + mrks[38].y)/2;
+	const lR = (mrks[39].x - mrks[36].x);
+	context.beginPath();
+	context.arc(lX, lY, lR, 0, Math.PI*2);
+	context.stroke();
+  context.fill();
+	// 右
+	const rX = (mrks[45].x + mrks[42].x)/2;
+	const rY = (mrks[46].y + mrks[43].y)/2;
+	const rR = (mrks[45].x - mrks[42].x);
+	context.beginPath();
+	context.arc(rX, rY, rR, 0, Math.PI*2);
+	context.stroke();
+  context.fill();
+}
+
+
+function setupVideo() {
+  // camera 
+  const cameraSize = { w: 360, h: 240 };
+  const canvasSize = { w: 360, h: 240 };
+  const resolution = { w: 360, h: 240 };
+  let video;
+  let media;
+  let canvas;
+  let canvasCtx;
+
+  // video要素をつくる
+  video          = document.createElement('video');
+  video.id       = 'video';
+  video.width    = cameraSize.w;
+  video.height   = cameraSize.h;
+  video.autoplay = true;
+  document.getElementById('videoPreview').appendChild(video);
+
+  // video要素にWebカメラの映像を表示させる
+  media = navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      width: { ideal: resolution.w },
+      height: { ideal: resolution.h }
+    }
+  }).then(function(stream) {
+    video.srcObject = stream;
+  });
+}
+
+setupVideo();
+document.getElementById('play').addEventListener('click', async () => {
+  video.play();
+  await detectSingleFace();
+})
+
+document.getElementById('stop').addEventListener('click', async () => {
+  video.pause();
+})
+
+  </script>
+</body>
+</html>
